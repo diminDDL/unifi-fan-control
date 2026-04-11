@@ -224,7 +224,7 @@ MIN_PWM=100   # Default: 91
 ALPHA=15      # Default: 20 (lower = faster response)
 
 # Reset optimal PWM to start fresh
-sudo rm /data/fan-control/optimal_pwm
+sudo rm /run/fan-control/optimal_pwm
 
 sudo systemctl restart fan-control.service
 ```
@@ -375,13 +375,13 @@ cat /data/fan-control/config
 **Solutions**:
 ```bash
 # Method 1: Direct URL
-curl -sSL https://raw.githubusercontent.com/iceteaSA/unifi-fan-control/BRANCH_NAME/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/BRANCH_NAME/install.sh | sudo bash
 
 # Method 2: Environment variable
-FAN_CONTROL_BRANCH=dev curl -sSL https://raw.githubusercontent.com/iceteaSA/unifi-fan-control/main/install.sh | sudo bash
+FAN_CONTROL_BRANCH=dev curl -sSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/main/install.sh | sudo bash
 
 # Method 3: Manual clone
-git clone https://github.com/iceteaSA/unifi-fan-control.git
+git clone https://github.com/diminDDL/unifi-fan-control.git
 cd unifi-fan-control
 git checkout BRANCH_NAME
 sudo ./install.sh
@@ -415,7 +415,7 @@ sudo systemctl start fan-control.service
 journalctl -u fan-control.service --since "1 hour ago" | wc -l
 ```
 
-**Note**: Service has built-in rate limiting (10,000 logs/day)
+**Note**: Service has built-in rate limiting (2,000 logs/day)
 
 **Solutions**:
 ```bash
@@ -451,8 +451,8 @@ cat /sys/class/hwmon/hwmon0/pwm1
 # Current configuration
 cat /data/fan-control/config
 
-# Optimal PWM value
-cat /data/fan-control/optimal_pwm
+# Optimal PWM value (volatile runtime state)
+cat /run/fan-control/optimal_pwm
 
 # Check for errors
 journalctl -u fan-control.service | grep -E "ERROR|FATAL|ALERT"
@@ -513,7 +513,7 @@ If you're still experiencing issues:
    - Configuration file
    - Steps to reproduce
 
-3. **Check existing issues**: https://github.com/iceteaSA/unifi-fan-control/issues
+3. **Check existing issues**: https://github.com/diminDDL/unifi-fan-control/issues
 
 ---
 

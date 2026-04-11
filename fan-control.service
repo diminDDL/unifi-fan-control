@@ -1,7 +1,7 @@
 [Unit]
 Description=UniFi Adaptive Fan Controller
 After=basic.target
-Documentation=https://github.com/iceteaSA/unifi-fan-control
+Documentation=https://github.com/diminDDL/unifi-fan-control
 
 [Service]
 Type=simple
@@ -11,9 +11,9 @@ ExecStart=/data/fan-control/fan-control.sh
 Restart=always
 RestartSec=5
 # 24h window for log rate limiting
-LogRateLimitIntervalSec=86400
-# Allow 10k logs/day
-LogRateLimitBurst=10000
+LogRateLimitIntervalSec=1d
+# Allow up to 2k logs/day from this service
+LogRateLimitBurst=2000
 
 [Install]
 WantedBy=multi-user.target

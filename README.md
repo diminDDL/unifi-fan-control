@@ -1,10 +1,10 @@
 # UniFi Intelligent Fan Control
 
+This is a fork of [the original by iceteaSA](https://github.com/iceteaSA/unifi-fan-control) to fit my own preferences.
+
 Advanced temperature management for Ubiquiti UniFi OS devices with fan control.
 
 Confirmed working on: UCG-Max, UCG-Fibre, UXG-Fibre, UDM-SE, UDM-Pro-Max, UDR7, UNVR
-
-> This project is built and maintained independently. If it keeps your UniFi gear cool and quiet, [consider supporting it](https://ko-fi.com/H2H719VB0U).
 
 ## Features
 - 🎛️ **Four Operational States**: 
@@ -30,7 +30,7 @@ Confirmed working on: UCG-Max, UCG-Fibre, UXG-Fibre, UDM-SE, UDM-Pro-Max, UDR7, 
 
 ## Installation
 ```bash
-curl -sSL https://raw.githubusercontent.com/iceteaSA/unifi-fan-control/main/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/main/install.sh | sudo bash
 ```
 
 ### Using a Different Branch
@@ -39,20 +39,20 @@ If you want to install from a specific branch (e.g., for testing new features):
 **Method 1: Direct URL**
 ```bash
 # Replace 'dev' with your desired branch name
-curl -sSL https://raw.githubusercontent.com/iceteaSA/unifi-fan-control/dev/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/dev/install.sh | sudo bash
 ```
 
 **Method 2: Environment Variable**
 ```bash
 # Set the branch name via environment variable
-FAN_CONTROL_BRANCH=dev curl -sSL https://raw.githubusercontent.com/iceteaSA/unifi-fan-control/main/install.sh | sudo bash
+FAN_CONTROL_BRANCH=dev curl -sSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/main/install.sh | sudo bash
 ```
 
 ### Manual Installation
 If you prefer to inspect the code before installation:
 ```bash
 # Clone the repository
-git clone https://github.com/iceteaSA/unifi-fan-control.git
+git clone https://github.com/diminDDL/unifi-fan-control.git
 cd unifi-fan-control
 
 # Optionally checkout a specific branch
@@ -90,8 +90,13 @@ CHECK_INTERVAL=15 # Temperature check frequency (seconds)
 FAN_PWM_AUTODETECT=true
 # Only used when FAN_PWM_AUTODETECT=false
 FAN_PWM_DEVICE="/sys/class/hwmon/hwmon0/pwm1"
-OPTIMAL_PWM_FILE="/data/fan-control/optimal_pwm"
+OPTIMAL_PWM_FILE="/run/fan-control/optimal_pwm"
 ```
+
+Runtime state files are intentionally volatile and stored in `/run/fan-control`:
+- Smoothed temperature cache: `/run/fan-control/temp_state`
+- Learned PWM profile: `/run/fan-control/optimal_pwm`
+These are recreated automatically and relearned after reboot.
 
 > **Note**: The script automatically checks for missing configuration parameters and adds them with default values if they're not present in the config file. This ensures that all required parameters are always available, even if you've edited the config file manually.
 

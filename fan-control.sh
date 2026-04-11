@@ -5,7 +5,7 @@
 
 ###[ CONFIGURATION ]###########################################################
 CONFIG_FILE="/data/fan-control/config"
-TEMP_STATE_FILE="/data/fan-control/temp_state"
+TEMP_STATE_FILE="/run/fan-control/temp_state"
 
 # Define default configuration values
 DEFAULT_MIN_PWM=91             # Minimum active fan speed (0-255)
@@ -17,7 +17,7 @@ DEFAULT_CHECK_INTERVAL=15      # Base check interval (seconds)
 DEFAULT_TAPER_MINS=90          # Cool-down duration (minutes)
 DEFAULT_FAN_PWM_AUTODETECT=true       # Auto-detect all active fan PWM channels
 DEFAULT_FAN_PWM_DEVICE="/sys/class/hwmon/hwmon0/pwm1"  # Only used when FAN_PWM_AUTODETECT=false
-DEFAULT_OPTIMAL_PWM_FILE="/data/fan-control/optimal_pwm"
+DEFAULT_OPTIMAL_PWM_FILE="/run/fan-control/optimal_pwm"
 DEFAULT_MAX_PWM_STEP=25        # Max PWM change per adjustment
 DEFAULT_DEADBAND=1             # Temp stability threshold (°C)
 DEFAULT_ALPHA=20               # Smoothing factor, lower values make the smoothed temp follow raw temp more closely (0-100)

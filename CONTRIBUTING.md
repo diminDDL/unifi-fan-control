@@ -141,7 +141,7 @@ refactor: Improve temperature smoothing algorithm
 
 - Check existing [documentation](README.md)
 - Review [troubleshooting guide](TROUBLESHOOTING.md)
-- Search existing [issues](https://github.com/iceteaSA/unifi-fan-control/issues)
+- Search existing [issues](https://github.com/diminDDL/unifi-fan-control/issues)
 - Create a new issue with detailed information
 
 ## Recognition
