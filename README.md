@@ -2,7 +2,7 @@
 
 This is a fork of [the original by iceteaSA](https://github.com/iceteaSA/unifi-fan-control) to fit my own preferences.
 
-Advanced temperature management for Ubiquiti UniFi OS devices with fan control.
+Advanced temperature management for Ubiquiti UniFi OS devices with fan control. And reporting to an optional [SME](https://github.com/diminDDL/simple-message-exchange) server.
 
 Confirmed working on: UCG-Max, UCG-Fibre, UXG-Fibre, UDM-SE, UDM-Pro-Max, UDR7, UNVR
 
@@ -27,6 +27,7 @@ Confirmed working on: UCG-Max, UCG-Fibre, UXG-Fibre, UDM-SE, UDM-Pro-Max, UDR7, 
   - Falls back to raw sysfs device paths when needed (UDM-SE)
   - Identifies active fans by RPM reading and write-tests each channel
   - All detected fans receive the same PWM value
+- 📋 **Remote Logging**: Integrated logging into an [SME](https://github.com/diminDDL/simple-message-exchange) server (optional).
 
 ## Installation
 ```bash
@@ -99,6 +100,36 @@ Runtime state files are intentionally volatile and stored in `/run/fan-control`:
 These are recreated automatically and relearned after reboot.
 
 > **Note**: The script automatically checks for missing configuration parameters and adds them with default values if they're not present in the config file. This ensures that all required parameters are always available, even if you've edited the config file manually.
+
+If you wish to configure [SME](https://github.com/diminDDL/simple-message-exchange) telemetry, edit `/data/fan-control/sme-config`:
+```bash
+USE_SME_SERVER=true           # Publish telemetry to SME server (true/false)
+SME_API_URL="http://192.168.0.100:8883/api/messages/publish"        # SME publish endpoint URL
+SME_API_KEY="secret-api-key"  # SME API key
+SME_DEVICE_ID=""              # SME device_id/topic suffix (defaults to hostname)
+SME_PUBLISH_INTERVAL=60       # SME publish frequency (seconds)
+```
+
+This will then produce the following logs in the [SME](https://github.com/diminDDL/simple-message-exchange) server:
+```json
+{
+  "message_id": "msg-UCG-Fiber-fan-state-1776110234",
+  "timestamp": "2026-04-13T19:57:14Z",
+  "device_id": "UCG-Fiber",
+  "message_type": "telemetry",
+  "service_name": "fan_state",
+  "payload": {
+    "controller_state": "OFF",
+    "controller_pwm": 0,
+    "controller_temp_smooth": 50,
+    "fan1_rpm": 0,
+    "fan2_rpm": 0,
+    "temp1": 47.7,
+    "temp2": 51.4,
+    "temp3": 56.1
+  }
+}
+```
 
 Apply changes:
 ```bash
@@ -243,8 +274,7 @@ systemctl restart fan-control.service  # Apply config changes
 ## Credits & Acknowledgments
 - **Thermal Research**: [UCG-Max Thermal Thread](https://www.reddit.com/r/Ubiquiti/comments/1fr8xyt/)
 - **System Integration**: SierraSoftworks service patterns
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/H2H719VB0U)
+- **Original Project**: [unifi-fan-control by iceteaSA](https://github.com/iceteaSA/unifi-fan-control).
 
 ---
 

@@ -6,6 +6,7 @@
 ###[ CONFIGURATION ]###########################################################
 CONFIG_FILE="/data/fan-control/config"
 TEMP_STATE_FILE="/run/fan-control/temp_state"
+SME_CONFIG_FILE="/data/fan-control/sme-config"
 
 # Define default configuration values
 DEFAULT_MIN_PWM=91             # Minimum active fan speed (0-255)
@@ -22,6 +23,18 @@ DEFAULT_MAX_PWM_STEP=25        # Max PWM change per adjustment
 DEFAULT_DEADBAND=1             # Temp stability threshold (°C)
 DEFAULT_ALPHA=20               # Smoothing factor, lower values make the smoothed temp follow raw temp more closely (0-100)
 DEFAULT_LEARNING_RATE=5        # PWM optimization step size
+DEFAULT_USE_SME_SERVER=false
+DEFAULT_SME_API_URL="http://100.100.100.100:8000/api/messages/publish"
+DEFAULT_SME_API_KEY=""
+DEFAULT_SME_DEVICE_ID=""
+DEFAULT_SME_PUBLISH_INTERVAL=60
+
+# SME telemetry config loaded from the SME_CONFIG_FILE
+USE_SME_SERVER=$DEFAULT_USE_SME_SERVER
+SME_API_URL="$DEFAULT_SME_API_URL"
+SME_API_KEY="$DEFAULT_SME_API_KEY"
+SME_DEVICE_ID="$DEFAULT_SME_DEVICE_ID"
+SME_PUBLISH_INTERVAL=$DEFAULT_SME_PUBLISH_INTERVAL
 
 # Create config file if it doesn't exist
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -68,6 +81,35 @@ fi
 
 # Source the config file
 source "$CONFIG_FILE" 2>/dev/null
+
+# Create and load SME config from a dedicated file.
+if [[ ! -f "$SME_CONFIG_FILE" ]]; then
+    sme_config_dir=$(dirname "$SME_CONFIG_FILE")
+    if [[ ! -d "$sme_config_dir" ]]; then
+        if ! mkdir -p "$sme_config_dir" 2>/dev/null; then
+            logger -t fan-control "FATAL: Failed to create SME config directory: $sme_config_dir"
+            exit 1
+        fi
+    fi
+
+    temp_sme_config="${SME_CONFIG_FILE}.tmp"
+    if ! cat > "$temp_sme_config" <<-SMEDEFAULTS 2>/dev/null; then
+USE_SME_SERVER=$DEFAULT_USE_SME_SERVER        # Publish telemetry to SME server (true/false)
+SME_API_URL="$DEFAULT_SME_API_URL"        # SME publish endpoint URL
+SME_API_KEY="$DEFAULT_SME_API_KEY"        # SME API key
+SME_DEVICE_ID="$DEFAULT_SME_DEVICE_ID"        # SME device_id/topic suffix (defaults to hostname)
+SME_PUBLISH_INTERVAL=$DEFAULT_SME_PUBLISH_INTERVAL        # SME publish frequency (seconds)
+SMEDEFAULTS
+        logger -t fan-control "FATAL: Failed to write SME config"
+        exit 1
+    elif ! mv "$temp_sme_config" "$SME_CONFIG_FILE" 2>/dev/null; then
+        logger -t fan-control "FATAL: Failed to create SME config file"
+        rm -f "$temp_sme_config" 2>/dev/null
+        exit 1
+    fi
+fi
+
+source "$SME_CONFIG_FILE" 2>/dev/null
 
 # Check if each required parameter is defined, and add missing ones
 missing_params=()
@@ -265,6 +307,40 @@ CONFIG
     fi
 fi
 
+# Validate and maintain SME config separately from core fan-control config
+sme_config_changed=false
+if [[ "$USE_SME_SERVER" != "true" && "$USE_SME_SERVER" != "false" ]]; then
+    logger -t fan-control "CONFIG: Invalid USE_SME_SERVER value: $USE_SME_SERVER (should be true/false), using default: $DEFAULT_USE_SME_SERVER"
+    USE_SME_SERVER=$DEFAULT_USE_SME_SERVER
+    sme_config_changed=true
+fi
+validate_config "SME_PUBLISH_INTERVAL" "$SME_PUBLISH_INTERVAL" 10 3600 "$DEFAULT_SME_PUBLISH_INTERVAL" || sme_config_changed=true
+if [[ -z "$SME_API_URL" ]]; then
+    logger -t fan-control "CONFIG: Empty SME_API_URL, using default: $DEFAULT_SME_API_URL"
+    SME_API_URL="$DEFAULT_SME_API_URL"
+    sme_config_changed=true
+fi
+
+if [ "$sme_config_changed" = true ]; then
+    logger -t fan-control "CONFIG: Updating SME configuration file with corrected values"
+
+    temp_sme_config="${SME_CONFIG_FILE}.tmp"
+    if ! cat > "$temp_sme_config" <<-SMECONFIG 2>/dev/null; then
+USE_SME_SERVER=$USE_SME_SERVER        # Publish telemetry to SME server (true/false)
+SME_API_URL="$SME_API_URL"        # SME publish endpoint URL
+SME_API_KEY="$SME_API_KEY"        # SME API key
+SME_DEVICE_ID="$SME_DEVICE_ID"        # SME device_id/topic suffix (defaults to hostname)
+SME_PUBLISH_INTERVAL=$SME_PUBLISH_INTERVAL        # SME publish frequency (seconds)
+SMECONFIG
+        logger -t fan-control "ERROR: Failed to write temporary SME config file"
+    elif ! mv "$temp_sme_config" "$SME_CONFIG_FILE" 2>/dev/null; then
+        logger -t fan-control "ERROR: Failed to update SME config file"
+        rm -f "$temp_sme_config" 2>/dev/null
+    else
+        logger -t fan-control "CONFIG: SME configuration file updated with corrected values"
+    fi
+fi
+
 # Derived values
 FAN_ACTIVATION_TEMP=$((MIN_TEMP + HYSTERESIS))
 TAPER_DURATION=$((TAPER_MINS * 60))
@@ -274,6 +350,17 @@ TAPER_DURATION=$((TAPER_MINS * 60))
 if ! command -v ubnt-systool >/dev/null 2>&1; then
     logger -t fan-control "FATAL: ubnt-systool command not found"
     exit 1
+fi
+
+if [[ "$USE_SME_SERVER" == "true" ]]; then
+    if ! command -v curl >/dev/null 2>&1; then
+        logger -t fan-control "FATAL: curl command not found (required when USE_SME_SERVER=true)"
+        exit 1
+    fi
+    if ! command -v sensors >/dev/null 2>&1; then
+        logger -t fan-control "FATAL: sensors command not found (required when USE_SME_SERVER=true)"
+        exit 1
+    fi
 fi
 
 ###[ PWM DEVICE DETECTION ]####################################################
@@ -418,6 +505,7 @@ SMOOTHED_TEMP=50   # Current smoothed temperature
 LAST_ADJUSTMENT=0  # Timestamp of last PWM optimization
 LAST_AVG_TEMP=0    # Previous temperature (for deadband calculations)
 TEMP_READ_FAILURES=0  # Track consecutive temperature reading failures
+LAST_SME_PUBLISH=0
 
 # Function to safely write to a file using atomic operations
 atomic_write_file() {
@@ -537,11 +625,93 @@ calculate_speed() {
     echo $speed
 }
 
+to_json_number_or_null() {
+    local value="$1"
+    if [[ "$value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "$value"
+    else
+        echo "null"
+    fi
+}
+
+publish_sme_telemetry() {
+    [[ "$USE_SME_SERVER" == "true" ]] || return 0
+
+    local sensors_output
+    sensors_output=$(sensors 2>/dev/null) || {
+        logger -t fan-control "SME: Failed to read sensors output"
+        return 1
+    }
+
+    local fan1_rpm fan2_rpm temp1 temp2 temp3
+    fan1_rpm=$(echo "$sensors_output" | awk '/fan1:/ {print $2; exit}')
+    fan2_rpm=$(echo "$sensors_output" | awk '/fan2:/ {print $2; exit}')
+    temp1=$(echo "$sensors_output" | awk '/temp1:/ {v=$2; gsub(/\+|°C/, "", v); print v; exit}')
+    temp2=$(echo "$sensors_output" | awk '/temp2:/ {v=$2; gsub(/\+|°C/, "", v); print v; exit}')
+    temp3=$(echo "$sensors_output" | awk '/temp3:/ {v=$2; gsub(/\+|°C/, "", v); print v; exit}')
+
+    local device_id="$SME_DEVICE_ID"
+    [[ -n "$device_id" ]] || device_id=$(hostname -s 2>/dev/null || echo "unknown-device")
+
+    local now ts state_name message_id
+    now=$(date +%s)
+    ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    state_name=$(get_state_name "$CURRENT_STATE")
+    message_id="msg-${device_id}-fan-state-${now}"
+
+    local body
+    body=$(cat <<EOF
+{
+  "topic": "devices/${device_id}/telemetry/fan_state",
+  "retain": true,
+  "message": {
+    "message_id": "${message_id}",
+    "timestamp": "${ts}",
+    "device_id": "${device_id}",
+    "message_type": "telemetry",
+    "service_name": "fan_state",
+    "payload": {
+      "controller_state": "${state_name}",
+      "controller_pwm": ${LAST_PWM},
+      "controller_temp_smooth": ${SMOOTHED_TEMP},
+      "fan1_rpm": $(to_json_number_or_null "$fan1_rpm"),
+      "fan2_rpm": $(to_json_number_or_null "$fan2_rpm"),
+      "temp1": $(to_json_number_or_null "$temp1"),
+      "temp2": $(to_json_number_or_null "$temp2"),
+      "temp3": $(to_json_number_or_null "$temp3")
+    }
+  }
+}
+EOF
+)
+
+    if ! curl -sS --max-time 5 --connect-timeout 3 -X POST "$SME_API_URL" \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: $SME_API_KEY" \
+        -d "$body" >/dev/null; then
+        logger -t fan-control "SME: Publish failed"
+        return 1
+    fi
+
+    logger -t fan-control "SME: Published fan_state telemetry"
+    return 0
+}
+
 # Speed control with logging
 set_fan_speed() {
     local new_speed=$1
     local current_temp=$(get_smoothed_temp)
     local reason="Normal operation"
+    local force_rewrite=false
+
+    # Detect external overrides (e.g. vendor fan daemon) and re-assert desired PWM.
+    local actual_pwm=""
+    if [[ -n "${FAN_PWM_DEVICES[0]}" ]]; then
+        actual_pwm=$(cat "${FAN_PWM_DEVICES[0]}" 2>/dev/null)
+        if [[ "$actual_pwm" =~ ^[0-9]+$ ]] && (( actual_pwm != new_speed )); then
+            force_rewrite=true
+        fi
+    fi
 
     # Emergency override
     if (( current_temp >= MAX_TEMP )); then
@@ -568,9 +738,12 @@ set_fan_speed() {
         new_speed=$(( new_speed < MIN_PWM ? MIN_PWM : new_speed ))
     fi
 
-    if [[ "$new_speed" -ne "$LAST_PWM" ]]; then
+    if [[ "$new_speed" -ne "$LAST_PWM" ]] || [[ "$force_rewrite" = true ]]; then
         # Note: Due to hardware limitations, the actual PWM value applied may differ from the requested value
         # (e.g., setting 50 might result in ~48, or 100 might result in ~92)
+        if [[ "$force_rewrite" = true ]]; then
+            reason="${reason}; correcting external override (${actual_pwm}→${new_speed}pwm)"
+        fi
         local write_ok=true
         for pwm_dev in "${FAN_PWM_DEVICES[@]}"; do
             if ! echo "$new_speed" > "$pwm_dev" 2>/dev/null; then
@@ -794,6 +967,15 @@ get_state_name() {
 declare -i loop_counter=0
 while true; do
     update_fan_state
+
+    if [[ "$USE_SME_SERVER" == "true" ]]; then
+        now_ts=$(date +%s)
+        if (( now_ts - LAST_SME_PUBLISH >= SME_PUBLISH_INTERVAL )); then
+            if publish_sme_telemetry; then
+                LAST_SME_PUBLISH=$now_ts
+            fi
+        fi
+    fi
 
     # Log status every 10 iterations
     (( loop_counter++ % 10 == 0 )) && {
