@@ -6,6 +6,12 @@ Advanced temperature management for Ubiquiti UniFi OS devices with fan control. 
 
 Confirmed working on: UCG-Max, UCG-Fibre, UXG-Fibre, UDM-SE, UDM-Pro-Max, UDR7, UNVR
 
+**Not supported: UniFi switches (USW line).** They run BusyBox `sh` with no bash, no
+`ubnt-systool` for temperature, and no systemd — and their fans are firmware controlled
+rather than exposed as writable `/sys/class/hwmon/*/pwm*`. Confirmed on a USW Enterprise
+48 PoE running 7.5.9: no `/sys/class/hwmon/*/pwm*` entries exist at all. This needs
+consoles and gateways running full UniFi OS.
+
 ## Features
 - 🎛️ **Four Operational States**: 
   - **OFF**: Fan disabled (temp < activation threshold)
@@ -28,25 +34,20 @@ Confirmed working on: UCG-Max, UCG-Fibre, UXG-Fibre, UDM-SE, UDM-Pro-Max, UDR7, 
   - Identifies active fans by RPM reading and write-tests each channel
   - All detected fans receive the same PWM value
 - 📋 **Remote Logging**: Integrated logging into an [SME](https://github.com/diminDDL/simple-message-exchange) server (optional).
+- **Drive Temperature Floor**: Raises PWM for a hot NVMe or SATA drive without changing the CPU curve
 
 ## Installation
 ```bash
-curl -sSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/main/install.sh | sudo bash
 ```
+
+This fork does not publish signed releases, so by default the installer downloads
+the runtime files from the `main` branch (unverified). The files are still
+size- and syntax-checked before anything under `/data` is replaced.
 
 ### Using a Different Branch
-If you want to install from a specific branch (e.g., for testing new features):
-
-**Method 1: Direct URL**
 ```bash
-# Replace 'dev' with your desired branch name
-curl -sSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/dev/install.sh | sudo bash
-```
-
-**Method 2: Environment Variable**
-```bash
-# Set the branch name via environment variable
-FAN_CONTROL_BRANCH=dev curl -sSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/main/install.sh | sudo FAN_CONTROL_BRANCH=feature/example bash
 ```
 
 ### Manual Installation
@@ -56,14 +57,12 @@ If you prefer to inspect the code before installation:
 git clone https://github.com/diminDDL/unifi-fan-control.git
 cd unifi-fan-control
 
-# Optionally checkout a specific branch
-# git checkout dev
-
-# Run the installer (you can also use FAN_CONTROL_BRANCH to override the branch)
+# Run the installer from a checkout or extracted release tarball
 sudo ./install.sh
-# Or with a specific branch:
-# sudo FAN_CONTROL_BRANCH=dev ./install.sh
 ```
+
+When all four runtime files are beside `install.sh`, the installer uses those
+local files without a network request.
 
 ## Configuration
 Edit `/data/fan-control/config`:
@@ -78,6 +77,13 @@ MIN_PWM=91        # Minimum active speed (0-255)
 MAX_PWM=255       # Maximum speed (0-255)
 MAX_PWM_STEP=25   # Maximum speed change per adjustment
                   # Note: Due to hardware limitations, actual PWM values may vary slightly from requested values
+
+# Drive Temperature Floor
+# auto detects a readable NVMe or SATA drive; false skips detection entirely
+DRIVE_TEMP_ENABLED=auto
+DRIVE_MIN_TEMP=50        # Start raising the PWM floor (°C)
+DRIVE_MAX_TEMP=70        # Reach maximum PWM (°C)
+DRIVE_CHECK_INTERVAL=60  # Drive temperature polling interval (seconds)
 
 # Advanced Tuning
 ALPHA=20          # Smoothing factor, lower values make the smoothed temp follow raw temp more closely (0-100 raw→smooth)
@@ -98,6 +104,16 @@ Runtime state files are intentionally volatile and stored in `/run/fan-control`:
 - Smoothed temperature cache: `/run/fan-control/temp_state`
 - Learned PWM profile: `/run/fan-control/optimal_pwm`
 These are recreated automatically and relearned after reboot.
+
+To put them elsewhere (e.g. to persist them in `/data`), set environment overrides in
+the service unit with `systemctl edit fan-control.service`:
+```ini
+[Service]
+Environment=FAN_CONTROL_TEMP_STATE_FILE=/data/fan-control/temp_state
+Environment=FAN_CONTROL_OPTIMAL_PWM_FILE=/data/fan-control/optimal_pwm
+Environment=FAN_CONTROL_SME_CONFIG_FILE=/data/fan-control/sme-config
+```
+`FAN_CONTROL_OPTIMAL_PWM_FILE` takes precedence over `OPTIMAL_PWM_FILE` in the config file.
 
 > **Note**: The script automatically checks for missing configuration parameters and adds them with default values if they're not present in the config file. This ensures that all required parameters are always available, even if you've edited the config file manually.
 
@@ -122,6 +138,7 @@ This will then produce the following logs in the [SME](https://github.com/diminD
     "controller_state": "OFF",
     "controller_pwm": 0,
     "controller_temp_smooth": 50,
+    "drive_temp": null,
     "fan1_rpm": 0,
     "fan2_rpm": 0,
     "temp1": 47.7,
@@ -130,6 +147,11 @@ This will then produce the following logs in the [SME](https://github.com/diminD
   }
 }
 ```
+
+`drive_temp` is the hottest readable drive (°C), or `null` when no drive temperature
+is available. If `curl` or `sensors` is missing, SME is disabled with an `ERROR` log
+rather than stopping the fan controller. Successful publishes are not logged; only the
+first failure of a streak and the recovery are, to stay within the journal rate limit.
 
 Apply changes:
 ```bash
@@ -172,6 +194,9 @@ STATE: TAPER→ACTIVE (67℃ ≥ 67℃)
 SET: 55→80pwm | Reason: Ramp-up limited: 55→80pwm
 SET: 120→255pwm | Reason: EMERGENCY: Temp 86℃ ≥ 85℃
 
+# Drive Temperature Floor
+DRIVE: Detected /dev/nvme0n1 via nvme | Temp=47℃ | wctemp=83℃
+
 # Enhanced Learning System
 LEARNING: 80→85pwm (+5 (rising temp 2℃)) [Rate=7]
 LEARNING: 95→90pwm (-5 (stable below threshold)) [Rate=5]
@@ -190,6 +215,9 @@ CONFIG: Updating configuration file with corrected values
 CONFIG: Missing parameter detected: CHECK_INTERVAL
 CONFIG: Updating configuration file with 1 missing parameters
 CONFIG: Configuration file updated successfully
+
+# Deployed version
+CONFIG: fan-control vX.Y.Z starting
 
 # System Status
 STATUS: State=ACTIVE | PWM=120 | Temp=72℃
@@ -263,13 +291,50 @@ systemctl restart fan-control.service  # Apply config changes
 /data/fan-control/uninstall.sh
 ```
 
+### Which version am I running?
+
+```bash
+cat /data/fan-control/VERSION
+journalctl -u fan-control.service | grep starting | tail -1
+# CONFIG: fan-control v1.1.1 starting
+```
+
+Neither prints anything on builds older than v1.0.0 — those predate version identity.
+
+### Updating
+
+Re-run the installer. There is no auto-update: this runs as root, and a self-updating
+root daemon is a large attack surface for a fan controller.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/diminDDL/unifi-fan-control/main/install.sh | sudo bash
+```
+
+**Your config is preserved.** `/data/fan-control/config` is never overwritten by an
+install or upgrade — only the scripts and the service unit are replaced. No backup step
+is needed.
+
+### Does it survive a UniFi OS update?
+
+A normal firmware update, yes. A factory reset, no.
+
+UniFi OS runs root as an overlay: the firmware is a read-only lower layer, and anything
+you install lands in the upper layer. Both halves of this install live there — the
+systemd unit and `/data/fan-control` — so they share one fate. A firmware update swaps
+the lower layer and leaves the upper alone.
+
+What does remove it: factory reset, `reset2defaults`, re-adoption, or any recovery flow
+that rebuilds the overlay. If the service disappears and other things you installed went
+with it, that was the overlay rather than this script. Reinstall with the one-liner above.
+
 ## Project Structure
 - **fan-control.sh**: The main script that monitors temperature and controls fan speed
+- **VERSION**: Bare SemVer identity for the deployed daemon
 - **install.sh**: Installation script that copies files and sets up the systemd service
-  - Supports installation from different branches via the `FAN_CONTROL_BRANCH` environment variable
-  - Automatically downloads required files if not found locally
+  - Uses local runtime files first, otherwise downloads from a branch (default `main`)
 - **uninstall.sh**: Script to remove the fan control system
 - **fan-control.service**: Systemd service configuration
+- **tests/**: Sandboxed test suite (no device, no root required); run with `tests/run-tests.sh`
 
 ## Credits & Acknowledgments
 - **Thermal Research**: [UCG-Max Thermal Thread](https://www.reddit.com/r/Ubiquiti/comments/1fr8xyt/)
