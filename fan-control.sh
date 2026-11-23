@@ -13,6 +13,7 @@ SME_CONFIG_FILE="${FAN_CONTROL_SME_CONFIG_FILE:-/data/fan-control/sme-config}"
 HWMON_BASE="${FAN_CONTROL_HWMON_BASE:-/sys/class/hwmon}"
 VERSION_FILE="${FAN_CONTROL_VERSION_FILE:-/data/fan-control/VERSION}"
 DRIVE_DEV_DIR="${FAN_CONTROL_DRIVE_DEV_DIR:-/dev}"
+NET_CLASS_DIR="${FAN_CONTROL_NET_CLASS_DIR:-/sys/class/net}"
 
 # Define default configuration values
 DEFAULT_MIN_PWM=91                                    # Minimum active fan speed (0-255)
@@ -33,6 +34,19 @@ DEFAULT_DRIVE_TEMP_ENABLED=auto
 DEFAULT_DRIVE_MIN_TEMP=50
 DEFAULT_DRIVE_MAX_TEMP=70
 DEFAULT_DRIVE_CHECK_INTERVAL=60
+# Link speed floor: hold LINK_FLOOR_PWM while a port is linked at >= LINK_FLOOR_SPEED.
+# LINK_FLOOR_INTERFACE is either "swconfig:<switch>:<port>" (a switch-chip port, read
+# with `swconfig dev <switch> port <port> get link`) or a kernel interface name.
+# UCG-Fiber layout: copper ports sit on switch0 and every ethN is a fixed internal
+# link that always reports 10000Mb/s, so kernel interfaces are useless there.
+#   switch0 port 0 = 10GbE RJ45 (confirmed) -> "swconfig:switch0:0"
+#   switch0 ports 1-4 = 2.5GbE RJ45 (order unverified), port 5 = CPU uplink (never use)
+# To find a port: run `swconfig dev switch0 show | grep 'link: port:'` with the cable
+# plugged in and again unplugged; the line that changes is the port, and its
+# "speed:NNNNbaseT" number is the LINK_FLOOR_SPEED value in Mb/s. See README.
+DEFAULT_LINK_FLOOR_INTERFACE="" # Port that triggers the link floor (empty = disabled)
+DEFAULT_LINK_FLOOR_SPEED=10000  # Link speed in Mb/s (10000 = 10G, 2500 = 2.5G) at or above which the floor applies
+DEFAULT_LINK_FLOOR_PWM=128      # Minimum PWM while the link runs at that speed
 
 # Create config file if it doesn't exist
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -68,6 +82,9 @@ DRIVE_TEMP_ENABLED=$DEFAULT_DRIVE_TEMP_ENABLED
 DRIVE_MIN_TEMP=$DEFAULT_DRIVE_MIN_TEMP
 DRIVE_MAX_TEMP=$DEFAULT_DRIVE_MAX_TEMP
 DRIVE_CHECK_INTERVAL=$DEFAULT_DRIVE_CHECK_INTERVAL
+LINK_FLOOR_INTERFACE="$DEFAULT_LINK_FLOOR_INTERFACE"   # Port for the link floor: "swconfig:switch0:0" (UCG-Fiber 10GbE RJ45) or e.g. "eth4"; empty = disabled; see README
+LINK_FLOOR_SPEED=$DEFAULT_LINK_FLOOR_SPEED   # Link speed in Mb/s (10000 = 10G, 2500 = 2.5G) at or above which the floor applies
+LINK_FLOOR_PWM=$DEFAULT_LINK_FLOOR_PWM   # Minimum PWM while the link runs at that speed
 DEFAULTS
         logger -t fan-control "FATAL: Failed to write to temporary config file"
         exit 1
@@ -123,6 +140,9 @@ check_param "DRIVE_TEMP_ENABLED" "$DEFAULT_DRIVE_TEMP_ENABLED" "# Enable drive t
 check_param "DRIVE_MIN_TEMP" "$DEFAULT_DRIVE_MIN_TEMP" "# Drive temperature where PWM floor begins (°C)"
 check_param "DRIVE_MAX_TEMP" "$DEFAULT_DRIVE_MAX_TEMP" "# Drive temperature where PWM floor reaches maximum (°C)"
 check_param "DRIVE_CHECK_INTERVAL" "$DEFAULT_DRIVE_CHECK_INTERVAL" "# Drive temperature polling interval (seconds)"
+check_param "LINK_FLOOR_INTERFACE" "\"$DEFAULT_LINK_FLOOR_INTERFACE\"" "# Port for the link floor: \"swconfig:switch0:0\" (UCG-Fiber 10GbE RJ45) or e.g. \"eth4\"; empty = disabled; see README"
+check_param "LINK_FLOOR_SPEED" "$DEFAULT_LINK_FLOOR_SPEED" "# Link speed in Mb/s (10000 = 10G, 2500 = 2.5G) at or above which the floor applies"
+check_param "LINK_FLOOR_PWM" "$DEFAULT_LINK_FLOOR_PWM" "# Minimum PWM while the link runs at that speed"
 
 # If missing parameters were found, update the config file atomically
 if [ ${#missing_params[@]} -gt 0 ]; then
@@ -208,6 +228,9 @@ DRIVE_TEMP_ENABLED=$DRIVE_TEMP_ENABLED
 DRIVE_MIN_TEMP=$DRIVE_MIN_TEMP
 DRIVE_MAX_TEMP=$DRIVE_MAX_TEMP
 DRIVE_CHECK_INTERVAL=$DRIVE_CHECK_INTERVAL
+LINK_FLOOR_INTERFACE="$LINK_FLOOR_INTERFACE"   # Port for the link floor: "swconfig:switch0:0" (UCG-Fiber 10GbE RJ45) or e.g. "eth4"; empty = disabled; see README
+LINK_FLOOR_SPEED=$LINK_FLOOR_SPEED   # Link speed in Mb/s (10000 = 10G, 2500 = 2.5G) at or above which the floor applies
+LINK_FLOOR_PWM=$LINK_FLOOR_PWM   # Minimum PWM while the link runs at that speed
 CONFIG
         if mv "$temp_config" "$CONFIG_FILE" 2>/dev/null; then
             logger -t fan-control "MIGRATE: Config file updated successfully"
@@ -256,6 +279,17 @@ validate_config "LEARNING_RATE" "$LEARNING_RATE" 1 20 "$DEFAULT_LEARNING_RATE" |
 validate_config "DRIVE_MIN_TEMP" "$DRIVE_MIN_TEMP" 30 90 "$DEFAULT_DRIVE_MIN_TEMP" || config_changed=true
 validate_config "DRIVE_MAX_TEMP" "$DRIVE_MAX_TEMP" 40 95 "$DEFAULT_DRIVE_MAX_TEMP" || config_changed=true
 validate_config "DRIVE_CHECK_INTERVAL" "$DRIVE_CHECK_INTERVAL" 15 600 "$DEFAULT_DRIVE_CHECK_INTERVAL" || config_changed=true
+validate_config "LINK_FLOOR_SPEED" "$LINK_FLOOR_SPEED" 10 800000 "$DEFAULT_LINK_FLOOR_SPEED" || config_changed=true
+validate_config "LINK_FLOOR_PWM" "$LINK_FLOOR_PWM" 0 255 "$DEFAULT_LINK_FLOOR_PWM" || config_changed=true
+# Either a kernel interface name (at most 15 chars, never '/', so it cannot
+# escape $NET_CLASS_DIR) or "swconfig:<switch>:<port>" for a switch-chip port.
+if [[ "$LINK_FLOOR_INTERFACE" =~ ^swconfig:[A-Za-z0-9_.-]{1,15}:[0-9]{1,2}$ ]]; then
+    :
+elif ! [[ "$LINK_FLOOR_INTERFACE" =~ ^[A-Za-z0-9_.:@-]{0,15}$ ]] || [[ "$LINK_FLOOR_INTERFACE" == "." || "$LINK_FLOOR_INTERFACE" == ".." || "$LINK_FLOOR_INTERFACE" == swconfig:* ]]; then
+    logger -t fan-control "CONFIG: Invalid LINK_FLOOR_INTERFACE value: $LINK_FLOOR_INTERFACE, disabling link floor"
+    LINK_FLOOR_INTERFACE=""
+    config_changed=true
+fi
 if [[ "$DRIVE_TEMP_ENABLED" != "auto" && "$DRIVE_TEMP_ENABLED" != "true" && "$DRIVE_TEMP_ENABLED" != "false" ]]; then
     logger -t fan-control "CONFIG: Invalid DRIVE_TEMP_ENABLED value: $DRIVE_TEMP_ENABLED, using default: $DEFAULT_DRIVE_TEMP_ENABLED"
     DRIVE_TEMP_ENABLED=$DEFAULT_DRIVE_TEMP_ENABLED
@@ -295,6 +329,9 @@ DRIVE_TEMP_ENABLED=$DRIVE_TEMP_ENABLED
 DRIVE_MIN_TEMP=$DRIVE_MIN_TEMP
 DRIVE_MAX_TEMP=$DRIVE_MAX_TEMP
 DRIVE_CHECK_INTERVAL=$DRIVE_CHECK_INTERVAL
+LINK_FLOOR_INTERFACE="$LINK_FLOOR_INTERFACE"   # Port for the link floor: "swconfig:switch0:0" (UCG-Fiber 10GbE RJ45) or e.g. "eth4"; empty = disabled; see README
+LINK_FLOOR_SPEED=$LINK_FLOOR_SPEED   # Link speed in Mb/s (10000 = 10G, 2500 = 2.5G) at or above which the floor applies
+LINK_FLOOR_PWM=$LINK_FLOOR_PWM   # Minimum PWM while the link runs at that speed
 CONFIG
         logger -t fan-control "ERROR: Failed to write to temporary config file"
         # Continue with current in-memory values, but don't update the file
@@ -663,6 +700,11 @@ PWM_OVERRIDE_ACTIVE=false
 PWM_OVERRIDE_COUNT=0
 LAST_SME_PUBLISH=0
 SME_FAILURES=0
+LINK_PWM_FLOOR=0   # PWM floor imposed by the link-speed trigger (0 = inactive)
+LINK_SPEED=""      # Last read speed of LINK_FLOOR_INTERFACE (Mb/s)
+LINK_FLOOR_STATE="" # Last logged link-floor state, so only transitions are logged
+LINK_UP=false
+LINK_DESC=""
 
 # Function to safely write to a file using atomic operations
 atomic_write_file() {
@@ -1048,6 +1090,108 @@ update_drive_temperature() {
     fi
 }
 
+###[ LINK SPEED FLOOR ]########################################################
+# A fast copper link (e.g. a 10GBASE-T port) heats the device well beyond what
+# the CPU sensor reflects. While LINK_FLOOR_INTERFACE is up at or above
+# LINK_FLOOR_SPEED, hold the fans at no less than LINK_FLOOR_PWM. Like the drive
+# floor this is applied after the OFF override, so it can start the fan.
+# Read every loop: two sysfs reads are cheap and link changes are immediate.
+# Reads a link into LINK_UP (true/false), LINK_SPEED (Mb/s or empty) and
+# LINK_DESC (human-readable state). Returns 1 when the source does not exist.
+#
+# On gateways whose ports sit behind a switch chip (e.g. UCG-Fiber), every
+# ethN is a fixed CPU<->switch link that always reports 10000Mb/s, so the real
+# port state has to come from swconfig: "swconfig:<switch>:<port>".
+read_link_sysfs() {
+    local iface_dir="$NET_CLASS_DIR/$1"
+    local carrier
+    [[ -e "$iface_dir" ]] || return 1
+    LINK_DESC=$(cat "$iface_dir/operstate" 2>/dev/null) || LINK_DESC="unknown"
+    carrier=$(cat "$iface_dir/carrier" 2>/dev/null) || carrier=""
+    LINK_SPEED=$(cat "$iface_dir/speed" 2>/dev/null) || LINK_SPEED=""
+    [[ "$LINK_DESC" == "up" || "$carrier" == "1" ]] && LINK_UP=true
+    return 0
+}
+
+read_link_swconfig() {
+    local switch_dev=$1
+    local port=$2
+    local output
+    command -v swconfig >/dev/null 2>&1 || return 1
+    # Expected: "port:0 link:up speed:10000baseT full-duplex ..." or "port:0 link:down"
+    output=$(swconfig dev "$switch_dev" port "$port" get link 2>/dev/null) || return 1
+    [[ "$output" == *"port:${port} "* || "$output" == *"port:${port}" ]] || return 1
+    if [[ "$output" =~ link:up ]]; then
+        LINK_UP=true
+        LINK_DESC="up"
+    else
+        LINK_DESC="down"
+    fi
+    if [[ "$output" =~ speed:([0-9]+) ]]; then
+        LINK_SPEED=${BASH_REMATCH[1]}
+    fi
+    return 0
+}
+
+update_link_floor() {
+    LINK_PWM_FLOOR=0
+    [[ -n "$LINK_FLOOR_INTERFACE" ]] || return 0
+
+    local state
+    local found
+    LINK_UP=false
+    LINK_SPEED=""
+    LINK_DESC=""
+
+    if [[ "$LINK_FLOOR_INTERFACE" == swconfig:* ]]; then
+        local spec=${LINK_FLOOR_INTERFACE#swconfig:}
+        read_link_swconfig "${spec%%:*}" "${spec##*:}" && found=true || found=false
+    else
+        read_link_sysfs "$LINK_FLOOR_INTERFACE" && found=true || found=false
+    fi
+
+    if [[ "$found" != true ]]; then
+        state="missing"
+    elif [[ "$LINK_UP" == true && "$LINK_SPEED" =~ ^[0-9]+$ ]] && ((LINK_SPEED >= LINK_FLOOR_SPEED)); then
+        state="active:${LINK_SPEED}"
+        LINK_PWM_FLOOR=$((LINK_FLOOR_PWM > MAX_PWM ? MAX_PWM : LINK_FLOOR_PWM))
+    else
+        state="inactive:${LINK_DESC}:${LINK_SPEED}"
+    fi
+
+    [[ "$state" != "$LINK_FLOOR_STATE" ]] || return 0
+    case $state in
+        missing)
+            logger -t fan-control "LINK: ${LINK_FLOOR_INTERFACE} not found or unreadable; link floor inactive"
+            ;;
+        active:*)
+            logger -t fan-control "LINK: ${LINK_FLOOR_INTERFACE} up at ${LINK_SPEED}Mb/s (≥ ${LINK_FLOOR_SPEED}Mb/s) - floor ${LINK_PWM_FLOOR}pwm"
+            ;;
+        *)
+            logger -t fan-control "LINK: ${LINK_FLOOR_INTERFACE} ${LINK_DESC} at ${LINK_SPEED:-?}Mb/s (< ${LINK_FLOOR_SPEED}Mb/s or down) - no link floor"
+            ;;
+    esac
+    LINK_FLOOR_STATE=$state
+}
+
+# Highest active PWM floor across all floor sources.
+effective_pwm_floor() {
+    echo $((DRIVE_PWM_FLOOR > LINK_PWM_FLOOR ? DRIVE_PWM_FLOOR : LINK_PWM_FLOOR))
+}
+
+# The state machine skips set_fan_speed when the temperature sits inside the
+# deadband, so a floor that appears mid-ACTIVE would never be applied. Re-run
+# set_fan_speed with the current PWM whenever a floor is above it.
+enforce_pwm_floor() {
+    ((TEMP_READ_FAILURES < 3)) || return 0 # the sensor fail-safe owns PWM
+    ((LAST_PWM >= 0)) || return 0
+    local floor
+    floor=$(effective_pwm_floor)
+    if ((floor > LAST_PWM)); then
+        set_fan_speed "$LAST_PWM"
+    fi
+}
+
 # Speed control with logging
 set_fan_speed() {
     local new_speed=$1
@@ -1079,14 +1223,23 @@ set_fan_speed() {
         new_speed=$((new_speed < MIN_PWM ? MIN_PWM : new_speed))
     fi
 
-    # The floor follows the OFF override so a hot drive can still start a cool CPU's fan.
-    if ((DRIVE_PWM_FLOOR > new_speed)); then
-        if ((DRIVE_PWM_FLOOR > LAST_PWM + MAX_PWM_STEP)); then
+    # Floors follow the OFF override so a hot drive or a fast link can still
+    # start a cool CPU's fan. The highest active floor wins.
+    local floor=$DRIVE_PWM_FLOOR
+    local floor_name="Drive floor"
+    local floor_reason="Drive temperature floor: ${DRIVE_TEMP}°C"
+    if ((LINK_PWM_FLOOR > floor)); then
+        floor=$LINK_PWM_FLOOR
+        floor_name="Link floor"
+        floor_reason="Link floor: ${LINK_FLOOR_INTERFACE} at ${LINK_SPEED}Mb/s"
+    fi
+    if ((floor > new_speed)); then
+        if ((floor > LAST_PWM + MAX_PWM_STEP)); then
             new_speed=$((LAST_PWM + MAX_PWM_STEP))
-            reason="Drive floor ramp-up: ${LAST_PWM}→${new_speed}pwm"
+            reason="${floor_name} ramp-up: ${LAST_PWM}→${new_speed}pwm"
         else
-            new_speed=$DRIVE_PWM_FLOOR
-            reason="Drive temperature floor: ${DRIVE_TEMP}°C"
+            new_speed=$floor
+            reason="$floor_reason"
         fi
     fi
 
@@ -1192,6 +1345,7 @@ set_fan_speed() {
 update_fan_state() {
     get_smoothed_temp
     update_drive_temperature
+    update_link_floor
     local avg_temp=$SMOOTHED_TEMP
     local now
     now=$(date +%s)
@@ -1409,6 +1563,7 @@ publish_sme_telemetry() {
       "controller_pwm": ${LAST_PWM},
       "controller_temp_smooth": ${SMOOTHED_TEMP},
       "drive_temp": ${drive_temp},
+      "link_floor_pwm": ${LINK_PWM_FLOOR},
       "fan1_rpm": $(to_json_number_or_null "$fan1_rpm"),
       "fan2_rpm": $(to_json_number_or_null "$fan2_rpm"),
       "temp1": $(to_json_number_or_null "$temp1"),
@@ -1476,6 +1631,7 @@ logger -t fan-control "CONFIG: fan-control v${FAN_CONTROL_VERSION} starting"
 logger -t fan-control "START: Optimal=${OPTIMAL_PWM}pwm | Config: MIN=${MIN_TEMP}°C, MAX=${MAX_TEMP}°C, HYST=${HYSTERESIS}°C"
 
 detect_drive_temperature
+update_link_floor
 get_smoothed_temp
 if ((SMOOTHED_TEMP >= FAN_ACTIVATION_TEMP)); then
     logger -t fan-control "COLDSTART: Initial temp ${SMOOTHED_TEMP}°C ≥ ${FAN_ACTIVATION_TEMP}°C"
@@ -1502,6 +1658,7 @@ declare -i loop_counter=0
 declare -i pwm_recheck_counter=0
 while true; do
     update_fan_state
+    enforce_pwm_floor
     correct_external_override
 
     if [[ "$FAN_PWM_AUTODETECT" != "false" ]]; then

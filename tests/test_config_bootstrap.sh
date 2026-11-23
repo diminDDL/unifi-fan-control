@@ -36,6 +36,7 @@ declare -a required_params=(
     "CHECK_INTERVAL" "TAPER_MINS" "FAN_PWM_AUTODETECT" "FAN_PWM_DEVICE"
     "OPTIMAL_PWM_FILE" "MAX_PWM_STEP" "DEADBAND" "ALPHA" "LEARNING_RATE"
     "DRIVE_TEMP_ENABLED" "DRIVE_MIN_TEMP" "DRIVE_MAX_TEMP" "DRIVE_CHECK_INTERVAL"
+    "LINK_FLOOR_INTERFACE" "LINK_FLOOR_SPEED" "LINK_FLOOR_PWM"
 )
 for param in "${required_params[@]}"; do
     if ! grep -q "^${param}=" "$SANDBOX/config" 2>/dev/null; then
@@ -43,7 +44,7 @@ for param in "${required_params[@]}"; do
     fi
 done
 
-echo "  ✓ Scenario ${scenario}: Fresh config created with all 18 parameters"
+echo "  ✓ Scenario ${scenario}: Fresh config created with all 21 parameters"
 
 stop_daemon
 cleanup_sandbox
@@ -149,11 +150,11 @@ DRIVE_CHECK_INTERVAL=60
 EOF
 
 start_daemon
-for param in MIN_PWM MAX_PWM MIN_TEMP MAX_TEMP HYSTERESIS CHECK_INTERVAL TAPER_MINS FAN_PWM_AUTODETECT FAN_PWM_DEVICE OPTIMAL_PWM_FILE MAX_PWM_STEP DEADBAND ALPHA LEARNING_RATE DRIVE_TEMP_ENABLED DRIVE_MIN_TEMP DRIVE_MAX_TEMP DRIVE_CHECK_INTERVAL; do
+for param in MIN_PWM MAX_PWM MIN_TEMP MAX_TEMP HYSTERESIS CHECK_INTERVAL TAPER_MINS FAN_PWM_AUTODETECT FAN_PWM_DEVICE OPTIMAL_PWM_FILE MAX_PWM_STEP DEADBAND ALPHA LEARNING_RATE DRIVE_TEMP_ENABLED DRIVE_MIN_TEMP DRIVE_MAX_TEMP DRIVE_CHECK_INTERVAL LINK_FLOOR_INTERFACE LINK_FLOOR_SPEED LINK_FLOOR_PWM; do
     grep -q "^${param}=" "$SANDBOX/config" || fail "migration rewrite removed ${param}"
 done
 
-echo "  ✓ Scenario ${scenario}: Migration rewrite preserves all 18 parameters"
+echo "  ✓ Scenario ${scenario}: Migration rewrite preserves all 21 parameters"
 
 stop_daemon
 cleanup_sandbox
@@ -184,11 +185,11 @@ DRIVE_CHECK_INTERVAL=60
 EOF
 
 start_daemon
-for param in MIN_PWM MAX_PWM MIN_TEMP MAX_TEMP HYSTERESIS CHECK_INTERVAL TAPER_MINS FAN_PWM_AUTODETECT FAN_PWM_DEVICE OPTIMAL_PWM_FILE MAX_PWM_STEP DEADBAND ALPHA LEARNING_RATE DRIVE_TEMP_ENABLED DRIVE_MIN_TEMP DRIVE_MAX_TEMP DRIVE_CHECK_INTERVAL; do
+for param in MIN_PWM MAX_PWM MIN_TEMP MAX_TEMP HYSTERESIS CHECK_INTERVAL TAPER_MINS FAN_PWM_AUTODETECT FAN_PWM_DEVICE OPTIMAL_PWM_FILE MAX_PWM_STEP DEADBAND ALPHA LEARNING_RATE DRIVE_TEMP_ENABLED DRIVE_MIN_TEMP DRIVE_MAX_TEMP DRIVE_CHECK_INTERVAL LINK_FLOOR_INTERFACE LINK_FLOOR_SPEED LINK_FLOOR_PWM; do
     grep -q "^${param}=" "$SANDBOX/config" || fail "corrected-value rewrite removed ${param}"
 done
 
-echo "  ✓ Scenario ${scenario}: Corrected-value rewrite preserves all 18 parameters"
+echo "  ✓ Scenario ${scenario}: Corrected-value rewrite preserves all 21 parameters"
 
 stop_daemon
 cleanup_sandbox

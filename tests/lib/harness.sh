@@ -38,8 +38,9 @@ setup_sandbox() {
     export FAN_CONTROL_HWMON_BASE="$SANDBOX/hwmon"
     export FAN_CONTROL_VERSION_FILE="$SANDBOX/VERSION"
     export FAN_CONTROL_DRIVE_DEV_DIR="$SANDBOX/drives"
+    export FAN_CONTROL_NET_CLASS_DIR="$SANDBOX/net"
 
-    mkdir -p "$FAN_CONTROL_DRIVE_DEV_DIR"
+    mkdir -p "$FAN_CONTROL_DRIVE_DEV_DIR" "$FAN_CONTROL_NET_CLASS_DIR"
 
     # Build fake hwmon tree — one device with one PWM channel
     local hwmon_dir="$SANDBOX/hwmon/hwmon0"

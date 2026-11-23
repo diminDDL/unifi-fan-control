@@ -35,6 +35,7 @@ consoles and gateways running full UniFi OS.
   - All detected fans receive the same PWM value
 - 📋 **Remote Logging**: Integrated logging into an [SME](https://github.com/diminDDL/simple-message-exchange) server (optional).
 - **Drive Temperature Floor**: Raises PWM for a hot NVMe or SATA drive without changing the CPU curve
+- **Link Speed Floor**: Holds a minimum PWM while a chosen port (e.g. the 10GbE RJ45 port) is linked at high speed
 
 ## Installation
 ```bash
@@ -85,6 +86,11 @@ DRIVE_MIN_TEMP=50        # Start raising the PWM floor (°C)
 DRIVE_MAX_TEMP=70        # Reach maximum PWM (°C)
 DRIVE_CHECK_INTERVAL=60  # Drive temperature polling interval (seconds)
 
+# Link Speed Floor (empty interface = disabled)
+LINK_FLOOR_INTERFACE=""  # e.g. "swconfig:switch0:0" or "eth4"; see "Link Speed Floor" below
+LINK_FLOOR_SPEED=10000   # Apply the floor while the link is up at ≥ this speed (Mb/s)
+LINK_FLOOR_PWM=128       # Minimum PWM while it is (capped at MAX_PWM)
+
 # Advanced Tuning
 ALPHA=20          # Smoothing factor, lower values make the smoothed temp follow raw temp more closely (0-100 raw→smooth)
 DEADBAND=1        # Temperature stability threshold (°C)
@@ -117,6 +123,83 @@ Environment=FAN_CONTROL_SME_CONFIG_FILE=/data/fan-control/sme-config
 
 > **Note**: The script automatically checks for missing configuration parameters and adds them with default values if they're not present in the config file. This ensures that all required parameters are always available, even if you've edited the config file manually.
 
+### Link Speed Floor
+10GBASE-T copper PHYs run hot, and that heat shows up only weakly on the CPU sensor.
+With `LINK_FLOOR_INTERFACE` set, the daemon checks that port's link every loop. While it
+is up at `LINK_FLOOR_SPEED` or faster, the fan never runs below `LINK_FLOOR_PWM`, even
+when the CPU curve would switch it off. The normal temperature curve still applies above
+the floor. When the link drops or renegotiates slower, the floor is released
+immediately. Each change is logged once with the `LINK:` tag.
+
+```bash
+LINK_FLOOR_INTERFACE="swconfig:switch0:0"  # UCG-Fiber 10GbE RJ45 port
+LINK_FLOOR_SPEED=10000                     # Mb/s; floor applies at this speed or faster
+LINK_FLOOR_PWM=128                         # minimum PWM while it does
+```
+
+#### Two kinds of port
+`LINK_FLOOR_INTERFACE` accepts two forms, because gateways wire their ports differently:
+
+- **`swconfig:<switch>:<port>`**: a port on a switch chip, read with
+  `swconfig dev <switch> port <port> get link`. Use this when the LAN ports sit behind a
+  switch chip, as on the UCG-Fiber.
+- **A kernel interface name** such as `eth4`: read from `/sys/class/net/<iface>/operstate`
+  and `speed`. Use this when each physical port has its own interface.
+
+#### UCG-Fiber port layout
+On the UCG-Fiber the copper ports live on the switch chip `switch0`. Every `eth0`-`eth5`
+is a fixed internal CPU-to-switch link that always reports `up` at `10000` Mb/s, whatever
+is plugged in, so **kernel interfaces cannot be used for the copper ports there.**
+
+| swconfig port | Physical port        | Notes                                      |
+|---------------|----------------------|--------------------------------------------|
+| `switch0` 0   | 10GbE RJ45           | `swconfig:switch0:0`, the hot one          |
+| `switch0` 1-4 | 2.5GbE RJ45          | order not verified; use the test below     |
+| `switch0` 5   | CPU uplink (tagged)  | always up at 10G; never use it as a trigger |
+
+Port 0 was confirmed by unplugging a cable. Ports 1-4 were inferred from link speeds, so
+check them with the test below before relying on the mapping. The SFP+ cages don't appear
+among `switch0`'s copper ports. If you need one, find it with the same test.
+
+#### Finding the port name and speed value
+Plug a device into the port at the speed you care about, take a snapshot, unplug it,
+take another and compare:
+
+```bash
+snap() {
+  swconfig dev switch0 show 2>/dev/null | grep 'link: port:'
+  for i in /sys/class/net/*; do
+    [ -d "$i" ] && printf '%-12s %-8s %s\n' "${i##*/}" "$(cat "$i/operstate")" "$(cat "$i/speed" 2>/dev/null)"
+  done
+}
+snap > /tmp/plugged.txt     # cable connected
+# unplug the cable, wait ~5 s
+snap > /tmp/unplugged.txt
+diff /tmp/plugged.txt /tmp/unplugged.txt
+```
+
+Use whichever line changed:
+
+- A swconfig line such as `link: port:0 link:up speed:10000baseT` means
+  `LINK_FLOOR_INTERFACE="swconfig:switch0:0"`.
+- A kernel interface line such as `eth4  up  10000` means `LINK_FLOOR_INTERFACE="eth4"`.
+
+`LINK_FLOOR_SPEED` is the number from that line in Mb/s: `10000` for 10G, `5000`, `2500`,
+or `1000`. Use the lowest speed that should trigger the floor. For example, `2500` also
+covers 5G and 10G links. To confirm the command the daemon uses directly, run
+`swconfig dev switch0 port 0 get link`.
+
+After setting it, restart and check the log:
+
+```bash
+systemctl restart fan-control.service
+journalctl -u fan-control.service | grep LINK:
+# LINK: swconfig:switch0:0 up at 10000Mb/s (≥ 10000Mb/s) - floor 128pwm
+```
+
+A `not found or unreadable` line means the name is wrong or `swconfig` failed. The fan
+keeps its normal behaviour in that case.
+
 If you wish to configure [SME](https://github.com/diminDDL/simple-message-exchange) telemetry, edit `/data/fan-control/sme-config`:
 ```bash
 USE_SME_SERVER=true           # Publish telemetry to SME server (true/false)
@@ -139,6 +222,7 @@ This will then produce the following logs in the [SME](https://github.com/diminD
     "controller_pwm": 0,
     "controller_temp_smooth": 50,
     "drive_temp": null,
+    "link_floor_pwm": 0,
     "fan1_rpm": 0,
     "fan2_rpm": 0,
     "temp1": 47.7,
@@ -149,7 +233,7 @@ This will then produce the following logs in the [SME](https://github.com/diminD
 ```
 
 `drive_temp` is the hottest readable drive (°C), or `null` when no drive temperature
-is available. If `curl` or `sensors` is missing, SME is disabled with an `ERROR` log
+is available. `link_floor_pwm` is the active link-speed floor (0 when inactive). If `curl` or `sensors` is missing, SME is disabled with an `ERROR` log
 rather than stopping the fan controller. Successful publishes are not logged; only the
 first failure of a streak and the recovery are, to stay within the journal rate limit.
 
@@ -196,6 +280,19 @@ SET: 120→255pwm | Reason: EMERGENCY: Temp 86℃ ≥ 85℃
 
 # Drive Temperature Floor
 DRIVE: Detected /dev/nvme0n1 via nvme | Temp=47℃ | wctemp=83℃
+
+# Link Speed Floor (logged only when the link state changes)
+LINK: swconfig:switch0:0 up at 10000Mb/s (≥ 10000Mb/s) - floor 128pwm
+LINK: swconfig:switch0:0 down at ?Mb/s (< 10000Mb/s or down) - no link floor
+SET: 0→25pwm | Reason: Link floor ramp-up: 0→25pwm
+
+# External PWM override (first correction and end of a streak only)
+OVERRIDE: External PWM change detected (/sys/class/hwmon/hwmon0/pwm1=0), restoring 128pwm
+OVERRIDE: External PWM changes stopped after 3 correction(s)
+
+# SME telemetry (successful publishes are silent)
+SME: Publish to http://192.168.0.100:8883/api/messages/publish failed, suppressing further failure logs until recovery
+SME: Publishing recovered after 4 failed attempt(s)
 
 # Enhanced Learning System
 LEARNING: 80→85pwm (+5 (rising temp 2℃)) [Rate=7]

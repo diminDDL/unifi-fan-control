@@ -312,6 +312,34 @@ sudo systemctl restart fan-control.service
 ```
 
 ---
+
+### Link Speed Floor Not Working
+
+**Symptoms**: The fan doesn't start when the 10G port is in use, or it runs all the time while `LINK:` reports a link that isn't really there.
+
+**Check what the daemon sees**:
+```bash
+journalctl -u fan-control.service | grep "LINK:" | tail -5
+grep LINK_FLOOR /data/fan-control/config
+```
+
+**Common causes**:
+- **The floor applies all the time on a UCG-Fiber**: `LINK_FLOOR_INTERFACE` is set to an `ethN`. On that device every `eth0`-`eth5` is a fixed internal link that always reports 10000 Mb/s. Use `swconfig:switch0:0` for the 10GbE RJ45 port.
+- **`not found or unreadable`**: the name is wrong, or `swconfig` failed. Test the exact command the daemon runs:
+  ```bash
+  swconfig dev switch0 port 0 get link
+  # port:0 link:up speed:10000baseT full-duplex txflow rxflow auto
+  ```
+- **The link shows as up but there's no floor**: the reported speed is below `LINK_FLOOR_SPEED`. A link that negotiated 2.5G or 5G doesn't trigger a 10000 setting. Lower `LINK_FLOOR_SPEED` if those speeds should count too.
+- **The wrong port**: find the right one with the plug/unplug test in the README's "Link Speed Floor" section.
+
+**Disable it**:
+```bash
+LINK_FLOOR_INTERFACE=""   # in /data/fan-control/config
+sudo systemctl restart fan-control.service
+```
+
+---
 ## Configuration Issues
 
 ### Configuration Changes Not Applied
